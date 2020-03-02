@@ -1,0 +1,177 @@
+# --------------------------------------------------------------------------------------------------------
+# Azure Pipeline to Build, Test and Deploy dotnet 4.5 asp.net project
+# --------------------------------------------------------------------------------------------------------
+
+trigger:
+  branches:
+    include:
+    - '*'
+variables:
+  name: $(BuildDefinitionName)_$(SourceBranchName)_$(date:yyyyMMdd)$(rev:.r)
+  solution: '**/*.sln'
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+
+stages:
+
+- stage: build_development
+  displayName: 'Build'
+  variables:
+    - group: build-stage-vars
+  jobs:
+  - job: build_development_branch
+    displayName: 'Build Development Branch'
+    condition: and(always(), eq(variables['Build.SourceBranch'], 'refs/heads/development'))
+    variables:
+      - group: development-env-vars
+    pool:
+      vmImage: 'vs2017-win2016'
+    steps:
+    - script: echo $(buildvar)
+      displayName: 'Starting Build Process'
+    - task: NuGetToolInstaller@1
+      displayName: 'Installing Nuget'
+    - task: NuGetCommand@2
+      inputs:
+        restoreSolution: '$(solution)'
+      displayName: 'Nuget to restore packages'
+    - task: VSBuild@1
+      inputs:
+        solution: '$(solution)'
+        msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=false /p:SkipInvalidConfigurations=true /p:PackageLocation="$(build.artifactStagingDirectory)"'
+        platform: '$(buildPlatform)'
+        configuration: '$(buildConfiguration)'
+      displayName: 'Build the solution'
+    - task: ArchiveFiles@2
+      inputs:
+        rootFolderOrFile: '$(System.DefaultWorkingDirectory)\WindowsService\bin\Release'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)\WindowsService.zip'
+        replaceExistingArchive: true
+      displayName: 'Archive WindowsService build output files'
+    - task: ArchiveFiles@2
+      inputs:
+        rootFolderOrFile: '$(System.DefaultWorkingDirectory)\WebApp\obj\Release\Package\PackageTmp'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)\WebApp.zip'
+        replaceExistingArchive: true
+      displayName: 'Archive WebApp build output files'
+    - powershell: |
+        mkdir $(Build.ArtifactStagingDirectory)\my-artifacts-dir
+        cd $(Build.ArtifactStagingDirectory)\my-artifacts-dir
+        mv ../*.zip . 
+      displayName: 'Applying dir naming standards'
+    - task: PublishBuildArtifacts@1
+      inputs:
+        pathtoPublish: '$(Build.ArtifactStagingDirectory)\my-artifacts-dir' 
+        artifactName: 'sage-sts-$(Build.BuildNumber)' 
+        publishLocation: 'Container'
+      displayName: 'Publish Artifacts to AzurePipeline Container'
+    - powershell: |
+        echo "Hello from PowerShell !!, Lets grab some pre-defined AzurePipeline variables"
+        echo "$(developement_server)"
+        echo "Build.ArtifactStagingDirectory"; echo "$(Build.ArtifactStagingDirectory)"
+        echo "Build.BinariesDirectory"; echo "$(Build.BinariesDirectory)"
+        echo "Build.StagingDirectory"; echo "$(Build.StagingDirectory)"
+        echo "System.DefaultWorkingDirectory"; echo "$(System.DefaultWorkingDirectory)"
+        echo "Agent.BuildDirectory"; echo "$(Agent.BuildDirectory)"
+      displayName: 'End of Build Process'
+  - job: build_production_branch
+    displayName: 'Build Production Branch'
+    condition: and(always(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+    variables:
+      - group: production-env-vars
+    pool:
+      vmImage: 'vs2017-win2016'
+    steps:
+    - script: echo "Build Job!!!"
+      displayName: 'Starting Build Process'
+    - task: NuGetToolInstaller@1
+      displayName: 'Installing Nuget'
+    - task: NuGetCommand@2
+      inputs:
+        restoreSolution: '$(solution)'
+      displayName: 'Nuget to get the sln file'
+    - task: VSBuild@1
+      inputs:
+        solution: '$(solution)'
+        msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:PackageLocation="$(build.artifactStagingDirectory)"'
+        platform: '$(buildPlatform)'
+        configuration: '$(buildConfiguration)'
+      displayName: 'Build the solution'
+    - task: PublishSymbols@2
+      inputs:
+        SearchPattern: '**/bin/**/*.pdb'
+        PublishSymbols: false
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
+    - powershell: |
+        $IPADDR = (Get-NetIPAddress | ?{ $_.AddressFamily -eq "IPv4" -and !($_.IPAddress -match "169") -and !($_.IPaddress -match "127") } | Select-Object -First 1).IPAddress
+        write-host $IPADDR
+        echo "Hello from PowerShell !!"
+        echo "$(production_server)"
+        write-host "Lets wait for some time"
+        1..10 | foreach-object {sleep 2}
+      displayName: 'End of Build Process'
+
+
+- stage: test_development
+  displayName: 'Test'
+  dependsOn: build_development
+  condition: succeeded()
+  variables:
+    - group: test-stage-vars
+  jobs:
+  - job: test_development_branch
+    displayName: 'Test Development Branch'
+    condition: and(always(), eq(variables['Build.SourceBranch'], 'refs/heads/development'))
+    variables:
+      - group: development-env-vars
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - script: echo $(testvar)
+      displayName: 'Step-1 of Test Process'
+  - job: test_production_branch
+    displayName: 'Test Production Branch'
+    condition: and(always(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+    variables:
+      - group: production-env-vars
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - script: echo "Test Job!!!"
+      displayName: 'Step-1 of the Test Process'
+
+- stage: deploy_development
+  displayName: 'Deploy'
+  dependsOn: test_development
+  condition: succeeded()
+  variables:
+    - group: deploy-stage-vars
+  jobs:
+  - job: deploy_development_branch
+    displayName: 'Deploy on Development Server'
+    condition: and(always(), eq(variables['Build.SourceBranch'], 'refs/heads/development'))
+    variables:
+      - group: development-env-vars
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - script: echo $(deployvar)
+      displayName: 'Step-1 of Deploy Process'
+  - job: deploy_production_branch
+    displayName: 'Deploy on Production Server'
+    condition: and(always(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+    variables:
+      - group: production-env-vars
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - script: echo "Deploy Job!!!"
+      displayName: 'Step-1 of the Deploy Process'
