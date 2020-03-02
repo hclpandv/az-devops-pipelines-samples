@@ -66,7 +66,7 @@ stages:
     - task: PublishBuildArtifacts@1
       inputs:
         pathtoPublish: '$(Build.ArtifactStagingDirectory)\my-artifacts-dir' 
-        artifactName: 'sage-sts-$(Build.BuildNumber)' 
+        artifactName: 'my-app-$(Build.BuildNumber)' 
         publishLocation: 'Container'
       displayName: 'Publish Artifacts to AzurePipeline Container'
     - powershell: |
